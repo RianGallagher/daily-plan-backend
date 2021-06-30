@@ -2,63 +2,57 @@ import express from "express";
 import { Client } from "@notionhq/client";
 import dotenv from "dotenv";
 import cors from "cors";
-import { CREATED_AT } from "./constants";
+import { CREATED_AT, DAY } from "./constants";
+import { Todo } from "./types";
 
 dotenv.config();
 const app = express();
-const port = 3056;
-
-const notion = new Client({ auth: process.env.NOTION_API_KEY });
+const port = process.env.PORT ?? 3056;
 
 app.use(cors());
 app.use(express.json());
 
-app.get("/", async (_req, res) => {
-    const databaseId = process.env.NOTION_DATABASE_ID ?? "";
-    try {
-        const response = await notion.databases.retrieve({ database_id: databaseId });
-        res.send(response);
-    } catch (error) {
-        res.send(error);
-    }
-});
+const notion = new Client({ auth: process.env.NOTION_API_KEY });
 
-app.get("/daily-todos", async (_request, response) => {
+/**
+ * Query the notion database for all the daily todo lists.
+ * @returns An array of todo list objects of the form { createdAt: Date, id: string, title: string }.
+ */
+app.get("/daily-todos", async (_request, response, next) => {
     const databaseId = process.env.NOTION_DATABASE_ID ?? "";
     try {
-        const { results } = await notion.databases.query({
+        const { results: todoLists } = await notion.databases.query({
             database_id: databaseId,
             sorts: [{ property: CREATED_AT, direction: "descending" }],
         });
 
-        const propertiesData = results.map(({ id, properties }) => {
-            const property = properties.Day;
-            const createdAt = properties["Created at"];
+        const formattedTodoLists = todoLists.map(({ id, properties }) => {
+            const day = properties[DAY];
+            const createdAt = properties[CREATED_AT];
 
-            if (property.type === "title" && createdAt.type === "created_time") {
-                const title = property.title.map((item) => item.plain_text).join(" ");
+            if (day.type === "title" && createdAt.type === "created_time") {
+                const title = day.title.map((item) => item.plain_text).join(" ");
                 return { createdAt: new Date(createdAt.created_time), id, title };
             }
         });
-        response.json(propertiesData);
+        response.json(formattedTodoLists);
     } catch (error) {
-        response.send(error);
+        console.error(error);
+        next(error);
     }
 });
 
-interface Todo {
-    readonly checked: boolean;
-    readonly id: string;
-    readonly text: string;
-}
-app.get("/daily-todos/:pageId", async (request, response) => {
+/**
+ * Get all the todos for a particular todo list.
+ * @returns An array of todos of the form { checked: boolean, id: string, text: string }.
+ */
+app.get("/daily-todos/:pageId", async (request, response, next) => {
     const pageId = request.params.pageId;
     try {
-        const { results } = await notion.blocks.children.list({ block_id: pageId });
-        const todos = results.reduce<Todo[]>((todoArray, block) => {
+        const { results: todos } = await notion.blocks.children.list({ block_id: pageId });
+        const formattedTodos = todos.reduce<Todo[]>((todoArray, block) => {
             if (block.type === "to_do") {
                 const { checked, text } = block.to_do;
-                block.id;
                 const todo = {
                     checked,
                     id: block.id,
@@ -69,17 +63,21 @@ app.get("/daily-todos/:pageId", async (request, response) => {
             return todoArray;
         }, []);
 
-        response.json(todos);
+        response.json(formattedTodos);
     } catch (error) {
         console.error(error);
+        next(error);
     }
 });
 
-app.post("/daily-todos/:blockId", async (request, response) => {
+/**
+ * Add a new todo to a todo list.
+ */
+app.post("/daily-todos/:blockId", async (request, response, next) => {
     const blockId = request.params.blockId;
     const todo = request.body.todo;
     try {
-        const thing = await notion.blocks.children.append({
+        await notion.blocks.children.append({
             block_id: blockId,
             children: [
                 {
@@ -110,7 +108,7 @@ app.post("/daily-todos/:blockId", async (request, response) => {
         response.sendStatus(204);
     } catch (error) {
         console.error(error);
-        response.sendStatus(500);
+        next(error);
     }
 });
 
